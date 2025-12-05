@@ -16,6 +16,8 @@ GtkWidget *entry_freq;
 GtkWidget *entry_rate;
 GtkWidget *entry_sf;
 GtkWidget *entry_gain;
+GtkWidget *entry_offset;
+GtkWidget *entry_bitrate;
 GtkWidget *radio_rx;
 GtkWidget *radio_tx;
 GtkWidget *btn_start_stop;
@@ -37,6 +39,8 @@ GMutex tx_queue_mutex;
 #define DEFAULT_RATE "4000000"
 #define DEFAULT_SF "64"
 #define DEFAULT_GAIN "30"
+#define DEFAULT_OFFSET "100000"
+#define DEFAULT_BITRATE "100"
 
 /* Helper to append text to log */
 struct log_data {
@@ -163,7 +167,7 @@ void on_start_stop_clicked(GtkWidget *widget, gpointer data) {
         // We can disable the button temporarily to prevent double clicks.
         
         // Hack: Run hackrf_info to unblock device if stuck
-        system("hackrf_info > /dev/null 2>&1 &");
+        if (system("hackrf_info > /dev/null 2>&1 &")) {}
     } else {
         // Start
         const char *driver = gtk_entry_get_text(GTK_ENTRY(entry_driver));
@@ -171,6 +175,8 @@ void on_start_stop_clicked(GtkWidget *widget, gpointer data) {
         unsigned long rate = strtoul(gtk_entry_get_text(GTK_ENTRY(entry_rate)), NULL, 10);
         unsigned int sf = strtoul(gtk_entry_get_text(GTK_ENTRY(entry_sf)), NULL, 10);
         char *gain = (char*)gtk_entry_get_text(GTK_ENTRY(entry_gain));
+        long int offset = strtol(gtk_entry_get_text(GTK_ENTRY(entry_offset)), NULL, 10);
+        unsigned int bitrate = strtoul(gtk_entry_get_text(GTK_ENTRY(entry_bitrate)), NULL, 10);
         int is_tx = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(radio_tx));
         
         transfer = dsss_transfer_create_callback(
@@ -179,9 +185,9 @@ void on_start_stop_clicked(GtkWidget *widget, gpointer data) {
             is_tx ? tx_callback : rx_callback, // In TX mode we read data to send. In RX mode we write received data.
             NULL,
             rate,
-            100, // Default bit rate, maybe add UI for it?
+            bitrate,
             freq,
-            0, // offset
+            offset,
             gain,
             0.0, // ppm
             sf,
@@ -302,6 +308,18 @@ int main(int argc, char *argv[]) {
     entry_gain = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry_gain), DEFAULT_GAIN);
     gtk_grid_attach(GTK_GRID(grid_settings), entry_gain, 5, 0, 1, 1);
+
+    // Offset
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Offset (Hz):")), 4, 1, 1, 1);
+    entry_offset = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(entry_offset), DEFAULT_OFFSET);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_offset, 5, 1, 1, 1);
+
+    // Bit Rate
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Bit Rate (b/s):")), 6, 0, 1, 1);
+    entry_bitrate = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(entry_bitrate), DEFAULT_BITRATE);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_bitrate, 7, 0, 1, 1);
     
     /* Control Area */
     GtkWidget *hbox_ctrl = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
