@@ -7,6 +7,62 @@ dsss-transfer is a command-line program to send or receive data by software
 defined radio using the DSSS modulation.
 
 
+## Installation
+
+### 1. Install Dependencies
+
+Install the required build tools and libraries. 
+**Note:** You must install `libgtk-3-dev` for the GUI to compile.
+
+```bash
+sudo apt update
+sudo apt install -y git build-essential autoconf automake libtool pkg-config
+sudo apt install -y libliquid-dev libsoapysdr-dev soapysdr-tools
+sudo apt install -y autopoint
+
+# Required for GUI:
+sudo apt install -y libgtk-3-dev
+```
+
+### 2. Build SoapySDR (Optional if not installing from apt)
+
+```bash
+git clone https://github.com/pothosware/SoapySDR.git
+cd SoapySDR
+mkdir build
+cd build
+cmake ..
+make -j4
+sudo make install
+sudo ldconfig
+cd ../..
+```
+
+### 3. Build dsss-transfer
+
+```bash
+# If you haven't cloned it yet:
+# git clone https://github.com/glv2/dsss-transfer.git
+# cd dsss-transfer
+
+autoreconf -i
+./configure
+make -j"$(nproc)"
+```
+
+### 4. Run
+
+Graphical Interface:
+```bash
+./src/dsss-transfer-gui
+```
+
+Command Line:
+```bash
+./src/dsss-transfer [options] [filename]
+```
+
+
 ## Usage
 
 dsss-transfer [options] [filename]
@@ -77,19 +133,6 @@ global gain, or as a series of keys and values to set specific
 gains (for example 'LNA=32,VGA=20').
 When using the audio mode (with the '-a' option), the gain value
 in dB is applied to the audio samples.
-
-
-## Compilation
-
-dsss-transfer requires the following dependencies:
-  - libliquid (https://github.com/jgaeddert/liquid-dsp)
-  - libSoapySDR (https://github.com/pothosware/SoapySDR)
-
-It can be compiled with the usual:
-
-    ./autogen.sh
-    ./configure
-    make
 
 
 ## Supported radios
