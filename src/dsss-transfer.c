@@ -253,10 +253,20 @@ void send_to_radio(dsss_transfer_t transfer,
                                      size,
                                      &flags,
                                      0,
-                                     10000);
+                                     100000); // 100ms timeout
       if(r > 0)
       {
         n += r;
+      }
+      else if (r == SOAPY_SDR_TIMEOUT)
+      {
+         // Just continue to check stop flag
+      }
+      else
+      {
+          // Other errors
+          fprintf(stderr, "SoapySDR write error: %d\n", r);
+          break; 
       }
     }
     if(last)
@@ -277,10 +287,14 @@ void send_to_radio(dsss_transfer_t transfer,
                                        n,
                                        &flags,
                                        0,
-                                       10000);
+                                       100000); // 100ms
         if(r > 0)
         {
           size -= r;
+        }
+        else if (r != SOAPY_SDR_TIMEOUT)
+        {
+           break;
         }
       }
       do
@@ -346,7 +360,7 @@ unsigned int receive_from_radio(dsss_transfer_t transfer,
                                   samples_size,
                                   &flags,
                                   &timestamp,
-                                  10000);
+                                  100000); // 100ms
     if(r >= 0)
     {
       n = r;
@@ -1041,6 +1055,10 @@ void dsss_transfer_free(dsss_transfer_t transfer)
     default:
       break;
     }
+    // Set pointers to NULL to avoid double-free if free is called again or checked.
+    transfer->radio_device.soapysdr = NULL; 
+    transfer->radio_stream.soapysdr = NULL;
+    
     free(transfer);
   }
 }
@@ -1092,6 +1110,13 @@ void dsss_transfer_start(dsss_transfer_t transfer)
 void dsss_transfer_stop(dsss_transfer_t transfer)
 {
   transfer->stop = 1;
+  if(transfer->radio_type == SOAPYSDR && transfer->radio_device.soapysdr && transfer->radio_stream.soapysdr)
+  {
+      SoapySDRDevice_deactivateStream(transfer->radio_device.soapysdr,
+                                      transfer->radio_stream.soapysdr,
+                                      0,
+                                      0);
+  }
 }
 
 void dsss_transfer_stop_all()

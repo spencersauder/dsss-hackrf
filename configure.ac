@@ -38,5 +38,7 @@ AC_CHECK_LIB(SoapySDR, SoapySDRDevice_make, [], AC_MSG_ERROR([SoapySDR library r
 AC_CHECK_HEADERS(pthread.h, [], AC_MSG_ERROR([pthread headers required]))
 AC_CHECK_LIB(pthread, pthread_create, [], AC_MSG_ERROR([pthread library required]))
 
+PKG_CHECK_MODULES([GTK], [gtk+-3.0])
+
 AC_CONFIG_FILES(Makefile examples/Makefile po/Makefile.in src/Makefile tests/Makefile)
 AC_OUTPUT
