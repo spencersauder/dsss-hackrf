@@ -390,7 +390,7 @@ int main(int argc, char *argv[]) {
         "button:hover { background-color: #e2e2e2; }"
         "label { color: #1e1e1e; }"
         "frame { border: 1px solid #dcdcdc; border-radius: 6px; padding: 10px; background: #fafafa; }"
-        "textview { font-family: 'Monospace'; font-size: 13px; color: #1a1a1a; background-color: #ffffff; }"
+        "textview { font-family: 'Monospace'; font-size: 22px; color: #1a1a1a; background-color: #ffffff; }"
         "textview text { color: #1a1a1a; background-color: #ffffff; }"
         "combobox { color: #1f1f1f; background-color: #ffffff; }"
         "tooltip { background-color: #ffffe1; color: #111111; border: 1px solid #d0d0d0; }"
