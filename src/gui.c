@@ -522,11 +522,11 @@ int main(int argc, char *argv[]) {
     gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Внутренний код (Inner FEC):")), 0, 2, 1, 1);
     combo_fec_inner = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "none", "none");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h74", "Hamming(7,4)");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h84", "Hamming(8,4)");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h128", "Hamming(12,8) [Default]");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "v27", "Conv r1/2 K=7");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "v29", "Conv r1/2 K=9");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h74", "h74");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h84", "h84");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h128", "h128 [Default]");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "v27", "v27");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "v29", "v29");
     gtk_combo_box_set_active(GTK_COMBO_BOX(combo_fec_inner), 3); // h128 default
     gtk_grid_attach(GTK_GRID(grid_settings), combo_fec_inner, 1, 2, 1, 1);
     gtk_widget_set_tooltip_text(combo_fec_inner, "Внутренний (быстрый) FEC. Hamming(12,8) по умолчанию");
@@ -535,8 +535,8 @@ int main(int argc, char *argv[]) {
     gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Внешний код (Outer FEC):")), 2, 2, 1, 1);
     combo_fec_outer = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "none", "none [Default]");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "rs8", "Reed-Solomon");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "h128", "Hamming(12,8)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "rs8", "rs8");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "h128", "h128");
     gtk_combo_box_set_active(GTK_COMBO_BOX(combo_fec_outer), 0); // none default
     gtk_grid_attach(GTK_GRID(grid_settings), combo_fec_outer, 3, 2, 1, 1);
     gtk_widget_set_tooltip_text(combo_fec_outer, "Внешний (доп.) FEC. none — без, rs8 — сильнее защита");
