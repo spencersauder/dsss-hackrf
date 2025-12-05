@@ -4,6 +4,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <math.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include "dsss-transfer.h"
 #include "gettext.h"
 
@@ -11,13 +13,14 @@
 
 /* UI Widgets */
 GtkWidget *window;
-GtkWidget *entry_driver;
 GtkWidget *entry_freq;
 GtkWidget *entry_rate;
 GtkWidget *entry_sf;
 GtkWidget *entry_gain;
 GtkWidget *entry_offset;
 GtkWidget *entry_bitrate;
+GtkWidget *combo_fec_inner;
+GtkWidget *combo_fec_outer;
 GtkWidget *radio_rx;
 GtkWidget *radio_tx;
 GtkWidget *btn_start_stop;
@@ -25,6 +28,12 @@ GtkWidget *textview_log;
 GtkWidget *entry_msg;
 GtkWidget *btn_send;
 GtkWidget *grid_settings;
+GtkWidget *drawing_area_spectrum;
+/* Метрики */
+GtkWidget *label_metric_status;
+GtkWidget *label_metric_mode;
+GtkWidget *label_metric_rx;
+GtkWidget *label_metric_tx;
 
 /* State */
 volatile int running = 0;
@@ -32,13 +41,36 @@ dsss_transfer_t transfer = NULL;
 pthread_t transfer_thread;
 GQueue *tx_queue = NULL;
 GMutex tx_queue_mutex;
+// Spectrum data
+float *spectrum_data = NULL;
+int spectrum_len = 0;
+GMutex spectrum_mutex;
+/* Счётчики */
+uint64_t rx_bytes = 0;
+uint64_t tx_bytes = 0;
+
+/* Обновление метрик */
+gboolean update_metrics_idle(gpointer data) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "Статус: %s", running ? "Работает" : "Остановлено");
+    gtk_label_set_text(GTK_LABEL(label_metric_status), buf);
+
+    snprintf(buf, sizeof(buf), "Режим: %s", gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(radio_tx)) ? "Передача (TX)" : "Приём (RX)");
+    gtk_label_set_text(GTK_LABEL(label_metric_mode), buf);
+
+    snprintf(buf, sizeof(buf), "Принято байт: %" PRIu64, rx_bytes);
+    gtk_label_set_text(GTK_LABEL(label_metric_rx), buf);
+
+    snprintf(buf, sizeof(buf), "Отправлено байт: %" PRIu64, tx_bytes);
+    gtk_label_set_text(GTK_LABEL(label_metric_tx), buf);
+    return G_SOURCE_REMOVE;
+}
 
 /* Constants */
-#define DEFAULT_DRIVER "driver=hackrf"
 #define DEFAULT_FREQ "434000000"
-#define DEFAULT_RATE "4000000"
+#define DEFAULT_RATE "2000000"
 #define DEFAULT_SF "64"
-#define DEFAULT_GAIN "30"
+#define DEFAULT_GAIN "20"
 #define DEFAULT_OFFSET "100000"
 #define DEFAULT_BITRATE "100"
 
@@ -67,6 +99,75 @@ gboolean append_log_idle(gpointer user_data) {
     free(data->text);
     free(data);
     return G_SOURCE_REMOVE;
+}
+
+// Callback to draw spectrum
+gboolean on_draw_event(GtkWidget *widget, cairo_t *cr, gpointer user_data) {
+    GtkAllocation allocation;
+    gtk_widget_get_allocation(widget, &allocation);
+    int width = allocation.width;
+    int height = allocation.height;
+
+    // Draw background
+    // cairo_set_source_rgb(cr, 0.1, 0.1, 0.1); // Dark background
+    // cairo_paint(cr);
+
+    // Draw grid
+    cairo_set_source_rgb(cr, 0.3, 0.3, 0.3);
+    cairo_set_line_width(cr, 0.5);
+    for (int i = 1; i < 10; i++) {
+        cairo_move_to(cr, i * width / 10.0, 0);
+        cairo_line_to(cr, i * width / 10.0, height);
+        cairo_move_to(cr, 0, i * height / 10.0);
+        cairo_line_to(cr, width, i * height / 10.0);
+    }
+    cairo_stroke(cr);
+
+    // Draw spectrum data
+    g_mutex_lock(&spectrum_mutex);
+    if (spectrum_data && spectrum_len > 0) {
+        float x_step = (float)width / spectrum_len;
+        
+        // Draw Noise Floor (Simulated as Blue)
+        cairo_set_source_rgb(cr, 0.0, 0.5, 1.0); // Blue for noise
+        cairo_set_line_width(cr, 1.0);
+        cairo_move_to(cr, 0, height);
+        
+        for (int i = 0; i < spectrum_len; i++) {
+            // Base noise level
+            float noise_val = 0.1 + ((float)rand() / RAND_MAX) * 0.05; 
+            float y = height - (noise_val * height);
+            cairo_line_to(cr, i * x_step, y);
+        }
+        cairo_stroke(cr);
+
+        // Draw Signal (Green) - overlay if active
+        cairo_set_source_rgb(cr, 0.0, 1.0, 0.0); // Green for signal
+        cairo_set_line_width(cr, 2.0); // Thicker line
+        cairo_move_to(cr, 0, height);
+        
+        for (int i = 0; i < spectrum_len; i++) {
+            float val = spectrum_data[i]; // This contains signal + noise from rx_callback simulation
+            float y = height - (val * height * 5.0); 
+            if (y < 0) y = 0;
+            if (y > height) y = height;
+            
+            cairo_line_to(cr, i * x_step, y);
+        }
+        cairo_stroke(cr);
+        
+        // Legend
+        cairo_set_source_rgb(cr, 0.0, 0.5, 1.0);
+        cairo_move_to(cr, 10, 20);
+        cairo_show_text(cr, "Шум");
+        
+        cairo_set_source_rgb(cr, 0.0, 1.0, 0.0);
+        cairo_move_to(cr, 60, 20);
+        cairo_show_text(cr, "Сигнал");
+    }
+    g_mutex_unlock(&spectrum_mutex);
+
+    return FALSE;
 }
 
 /* Callbacks for dsss-transfer */
@@ -106,6 +207,10 @@ int tx_callback(void *context, unsigned char *payload, unsigned int payload_size
         g_bytes_unref(bytes);
     }
     g_mutex_unlock(&tx_queue_mutex);
+    if (bytes_written > 0) {
+        tx_bytes += bytes_written;
+        g_idle_add(update_metrics_idle, NULL);
+    }
     
     return bytes_written;
 }
@@ -113,7 +218,27 @@ int tx_callback(void *context, unsigned char *payload, unsigned int payload_size
 /* RX Callback */
 int rx_callback(void *context, unsigned char *payload, unsigned int payload_size) {
     if (!running) return 0;
+    
+    // Update Spectrum Data (Fake visualization for now based on payload activity)
+    // Real implementation would require access to IQ samples which is not exposed by callback
+    g_mutex_lock(&spectrum_mutex);
+    if (!spectrum_data) {
+        spectrum_len = 512;
+        spectrum_data = malloc(spectrum_len * sizeof(float));
+    }
+    // Generate some random noise + signal for visualization
+    for (int i = 0; i < spectrum_len; i++) {
+        spectrum_data[i] = ((float)rand() / RAND_MAX) * 0.1; // Noise floor
+        if (payload_size > 0 && i > 200 && i < 300) {
+             spectrum_data[i] += 0.5; // Signal "bump"
+        }
+    }
+    g_mutex_unlock(&spectrum_mutex);
+    gtk_widget_queue_draw(drawing_area_spectrum); // Trigger redraw
+
     if (payload_size == 0) return 0;
+    rx_bytes += payload_size;
+    g_idle_add(update_metrics_idle, NULL);
     
     struct log_data *data = malloc(sizeof(struct log_data));
     data->text = malloc(payload_size + 1);
@@ -170,7 +295,7 @@ void on_start_stop_clicked(GtkWidget *widget, gpointer data) {
         if (system("hackrf_info > /dev/null 2>&1 &")) {}
     } else {
         // Start
-        const char *driver = gtk_entry_get_text(GTK_ENTRY(entry_driver));
+        const char *driver = "driver=hackrf";
         unsigned long freq = strtoul(gtk_entry_get_text(GTK_ENTRY(entry_freq)), NULL, 10);
         unsigned long rate = strtoul(gtk_entry_get_text(GTK_ENTRY(entry_rate)), NULL, 10);
         unsigned int sf = strtoul(gtk_entry_get_text(GTK_ENTRY(entry_sf)), NULL, 10);
@@ -256,6 +381,25 @@ void on_window_destroy(GtkWidget *widget, gpointer data) {
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);
     
+    // Add CSS Styling
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(provider,
+        "window { background-color: #f4f4f4; color: #1e1e1e; }"
+        "entry { padding: 6px; border-radius: 4px; border: 1px solid #c8c8c8; background-color: #ffffff; color: #1f1f1f; }"
+        "button { padding: 8px 16px; border-radius: 4px; border: 1px solid #c0c0c0; background-color: #f0f0f0; color: #1f1f1f; }"
+        "button:hover { background-color: #e2e2e2; }"
+        "label { color: #1e1e1e; }"
+        "frame { border: 1px solid #dcdcdc; border-radius: 6px; padding: 10px; background: #fafafa; }"
+        "textview { font-family: 'Monospace'; font-size: 13px; color: #1a1a1a; background-color: #ffffff; }"
+        "textview text { color: #1a1a1a; background-color: #ffffff; }"
+        "combobox { color: #1f1f1f; background-color: #ffffff; }"
+        "tooltip { background-color: #ffffe1; color: #111111; border: 1px solid #d0d0d0; }"
+        "tooltip * { color: #111111; }"
+        , -1, NULL);
+    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
+                                              GTK_STYLE_PROVIDER(provider),
+                                              GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    
     dsss_transfer_set_verbose(1); // Enable verbose logging to terminal
 
     setlocale(LC_ALL, "");
@@ -267,8 +411,8 @@ int main(int argc, char *argv[]) {
     
     /* Main Window */
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "DSSS Transfer GUI");
-    gtk_window_set_default_size(GTK_WINDOW(window), 600, 500);
+    gtk_window_set_title(GTK_WINDOW(window), "Широкополосная модуляция с прямым расширением спектра на HackRF");
+    gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
     g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), NULL);
     
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
@@ -277,69 +421,122 @@ int main(int argc, char *argv[]) {
     
     /* Settings Grid */
     grid_settings = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid_settings), 5);
-    gtk_grid_set_column_spacing(GTK_GRID(grid_settings), 10);
+    gtk_grid_set_row_spacing(GTK_GRID(grid_settings), 10);
+    gtk_grid_set_column_spacing(GTK_GRID(grid_settings), 15);
     gtk_box_pack_start(GTK_BOX(vbox), grid_settings, FALSE, FALSE, 0);
     
-    // Driver
-    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Driver:")), 0, 0, 1, 1);
-    entry_driver = gtk_entry_new();
-    gtk_entry_set_text(GTK_ENTRY(entry_driver), DEFAULT_DRIVER);
-    gtk_grid_attach(GTK_GRID(grid_settings), entry_driver, 1, 0, 1, 1);
-    
     // Frequency
-    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Frequency (Hz):")), 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Частота (Hz):")), 0, 0, 1, 1);
     entry_freq = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry_freq), DEFAULT_FREQ);
-    gtk_grid_attach(GTK_GRID(grid_settings), entry_freq, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_freq, 1, 0, 1, 1);
+    gtk_widget_set_tooltip_text(entry_freq, "Частота несущей, Гц (например, 434000000)");
     
     // Sample Rate
-    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Sample Rate (S/s):")), 2, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Частота дискретизации (S/s):")), 0, 1, 1, 1);
     entry_rate = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry_rate), DEFAULT_RATE);
-    gtk_grid_attach(GTK_GRID(grid_settings), entry_rate, 3, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_rate, 1, 1, 1, 1);
+    gtk_widget_set_tooltip_text(entry_rate, "Частота дискретизации, S/s. 2e6–4e6 обычно для HackRF");
     
     // Spreading Factor
-    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Spreading Factor:")), 2, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Коэфф. расширения:")), 2, 0, 1, 1);
     entry_sf = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry_sf), DEFAULT_SF);
-    gtk_grid_attach(GTK_GRID(grid_settings), entry_sf, 3, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_sf, 3, 0, 1, 1);
+    gtk_widget_set_tooltip_text(entry_sf, "Коэффициент DSSS. 64 — надежно, но медленно");
     
     // Gain
-    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Gain (dB):")), 4, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Усиление (dB):")), 2, 1, 1, 1);
     entry_gain = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry_gain), DEFAULT_GAIN);
-    gtk_grid_attach(GTK_GRID(grid_settings), entry_gain, 5, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_gain, 3, 1, 1, 1);
+    gtk_widget_set_tooltip_text(entry_gain, "Усиление TX/RX. В одной комнате 10–20 dB");
 
     // Offset
-    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Offset (Hz):")), 4, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Смещение (Hz):")), 4, 0, 1, 1);
     entry_offset = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry_offset), DEFAULT_OFFSET);
-    gtk_grid_attach(GTK_GRID(grid_settings), entry_offset, 5, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_offset, 5, 0, 1, 1);
+    gtk_widget_set_tooltip_text(entry_offset, "Смещение для ухода от DC. Для HackRF обычно ~100000");
 
     // Bit Rate
-    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Bit Rate (b/s):")), 6, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Скорость (b/s):")), 4, 1, 1, 1);
     entry_bitrate = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(entry_bitrate), DEFAULT_BITRATE);
-    gtk_grid_attach(GTK_GRID(grid_settings), entry_bitrate, 7, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_bitrate, 5, 1, 1, 1);
+    gtk_widget_set_tooltip_text(entry_bitrate, "Битовая скорость полезных данных. 100 — надежно");
+
+    // FEC Inner
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Внутренний код (Inner FEC):")), 0, 2, 1, 1);
+    combo_fec_inner = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "none", "none");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h74", "Hamming(7,4)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h84", "Hamming(8,4)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "h128", "Hamming(12,8) [Default]");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "v27", "Conv r1/2 K=7");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_inner), "v29", "Conv r1/2 K=9");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(combo_fec_inner), 3); // h128 default
+    gtk_grid_attach(GTK_GRID(grid_settings), combo_fec_inner, 1, 2, 1, 1);
+    gtk_widget_set_tooltip_text(combo_fec_inner, "Внутренний (быстрый) FEC. Hamming(12,8) по умолчанию");
+
+    // FEC Outer
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Внешний код (Outer FEC):")), 2, 2, 1, 1);
+    combo_fec_outer = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "none", "none [Default]");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "rs8", "Reed-Solomon");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(combo_fec_outer), "h128", "Hamming(12,8)");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(combo_fec_outer), 0); // none default
+    gtk_grid_attach(GTK_GRID(grid_settings), combo_fec_outer, 3, 2, 1, 1);
+    gtk_widget_set_tooltip_text(combo_fec_outer, "Внешний (доп.) FEC. none — без, rs8 — сильнее защита");
+    
+    /* Spectrum Display - Removed as requested */
+    /*
+    GtkWidget *frame_spectrum = gtk_frame_new(_("Спектр амплитуд (Шум vs Сигнал)"));
+    gtk_box_pack_start(GTK_BOX(vbox), frame_spectrum, TRUE, TRUE, 5); // Allow expand
+    drawing_area_spectrum = gtk_drawing_area_new();
+    gtk_widget_set_size_request(drawing_area_spectrum, -1, 300); // Increased height to 300
+    g_signal_connect(G_OBJECT(drawing_area_spectrum), "draw", G_CALLBACK(on_draw_event), NULL);
+    gtk_container_add(GTK_CONTAINER(frame_spectrum), drawing_area_spectrum);
+    */
     
     /* Control Area */
     GtkWidget *hbox_ctrl = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_box_pack_start(GTK_BOX(vbox), hbox_ctrl, FALSE, FALSE, 5);
     
-    radio_rx = gtk_radio_button_new_with_label(NULL, _("Receive Mode"));
-    radio_tx = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(radio_rx), _("Transmit Mode"));
+    radio_rx = gtk_radio_button_new_with_label(NULL, _("Режим приема (RX)"));
+    radio_tx = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(radio_rx), _("Режим передачи (TX)"));
     gtk_box_pack_start(GTK_BOX(hbox_ctrl), radio_rx, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox_ctrl), radio_tx, FALSE, FALSE, 0);
     
-    btn_start_stop = gtk_button_new_with_label(_("Start"));
+    btn_start_stop = gtk_button_new_with_label(_("Старт"));
     g_signal_connect(btn_start_stop, "clicked", G_CALLBACK(on_start_stop_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_ctrl), btn_start_stop, FALSE, FALSE, 0);
     
+    /* Метрики */
+    GtkWidget *frame_metrics = gtk_frame_new(_("Метрики"));
+    gtk_box_pack_start(GTK_BOX(vbox), frame_metrics, FALSE, FALSE, 5);
+    GtkWidget *grid_metrics = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid_metrics), 4);
+    gtk_grid_set_column_spacing(GTK_GRID(grid_metrics), 10);
+    gtk_container_add(GTK_CONTAINER(frame_metrics), grid_metrics);
+
+    label_metric_status = gtk_label_new(_("Статус: Остановлено"));
+    label_metric_mode   = gtk_label_new(_("Режим: Приём (RX)"));
+    label_metric_rx     = gtk_label_new(_("Принято байт: 0"));
+    label_metric_tx     = gtk_label_new(_("Отправлено байт: 0"));
+
+    gtk_grid_attach(GTK_GRID(grid_metrics), label_metric_status, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_metrics), label_metric_mode,   1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_metrics), label_metric_rx,     0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_metrics), label_metric_tx,     1, 1, 1, 1);
+
     /* Log Area */
     GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window),
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    // Restore larger log area since spectrum is gone
+    // gtk_widget_set_size_request(scrolled_window, -1, 100); 
     gtk_box_pack_start(GTK_BOX(vbox), scrolled_window, TRUE, TRUE, 0);
     
     textview_log = gtk_text_view_new();
@@ -352,11 +549,11 @@ int main(int argc, char *argv[]) {
     gtk_box_pack_start(GTK_BOX(vbox), hbox_msg, FALSE, FALSE, 0);
     
     entry_msg = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry_msg), _("Type message here..."));
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry_msg), _("Введите сообщение..."));
     g_signal_connect(entry_msg, "activate", G_CALLBACK(on_send_clicked), NULL); // Enter key sends
     gtk_box_pack_start(GTK_BOX(hbox_msg), entry_msg, TRUE, TRUE, 0);
     
-    btn_send = gtk_button_new_with_label(_("Send"));
+    btn_send = gtk_button_new_with_label(_("Отправить"));
     g_signal_connect(btn_send, "clicked", G_CALLBACK(on_send_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hbox_msg), btn_send, FALSE, FALSE, 0);
     
