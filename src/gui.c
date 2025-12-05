@@ -24,6 +24,7 @@ GtkWidget *combo_fec_outer;
 GtkWidget *radio_rx;
 GtkWidget *radio_tx;
 GtkWidget *btn_start_stop;
+GtkWidget *entry_pwd;
 GtkWidget *textview_log;
 GtkWidget *entry_msg;
 GtkWidget *btn_send;
@@ -48,6 +49,8 @@ GMutex spectrum_mutex;
 /* Счётчики */
 uint64_t rx_bytes = 0;
 uint64_t tx_bytes = 0;
+uint32_t password_key = 0;
+int use_cipher = 0;
 
 /* Обновление метрик */
 gboolean update_metrics_idle(gpointer data) {
@@ -64,6 +67,37 @@ gboolean update_metrics_idle(gpointer data) {
     snprintf(buf, sizeof(buf), "Отправлено байт: %" PRIu64, tx_bytes);
     gtk_label_set_text(GTK_LABEL(label_metric_tx), buf);
     return G_SOURCE_REMOVE;
+}
+
+/* Простое хеширование пароля (FNV-1a) */
+uint32_t hash_password(const char *pwd) {
+    uint32_t h = 0x811c9dc5;
+    if (!pwd) return 0;
+    while (*pwd) {
+        h ^= (unsigned char)(*pwd++);
+        h *= 0x01000193;
+    }
+    return h;
+}
+
+/* Генерация простого xorshift32 */
+static inline uint32_t xorshift32(uint32_t *state) {
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+/* Простейшее "шифрование" (xor) для демонстрации: если пароли не совпадают, будет "каша" */
+void xor_buffer_with_key(unsigned char *buf, unsigned int len, uint32_t key_seed) {
+    if (!use_cipher || key_seed == 0) return;
+    uint32_t st = key_seed;
+    for (unsigned int i = 0; i < len; i++) {
+        st = xorshift32(&st);
+        buf[i] ^= (unsigned char)(st & 0xFF);
+    }
 }
 
 /* Constants */
@@ -208,6 +242,7 @@ int tx_callback(void *context, unsigned char *payload, unsigned int payload_size
     }
     g_mutex_unlock(&tx_queue_mutex);
     if (bytes_written > 0) {
+        xor_buffer_with_key(payload, bytes_written, password_key); // "Шифруем" перед отправкой
         tx_bytes += bytes_written;
         g_idle_add(update_metrics_idle, NULL);
     }
@@ -237,6 +272,7 @@ int rx_callback(void *context, unsigned char *payload, unsigned int payload_size
     gtk_widget_queue_draw(drawing_area_spectrum); // Trigger redraw
 
     if (payload_size == 0) return 0;
+    xor_buffer_with_key(payload, payload_size, password_key); // "Расшифровываем" (или каша при неверном пароле)
     rx_bytes += payload_size;
     g_idle_add(update_metrics_idle, NULL);
     
@@ -303,6 +339,21 @@ void on_start_stop_clicked(GtkWidget *widget, gpointer data) {
         long int offset = strtol(gtk_entry_get_text(GTK_ENTRY(entry_offset)), NULL, 10);
         unsigned int bitrate = strtoul(gtk_entry_get_text(GTK_ENTRY(entry_bitrate)), NULL, 10);
         int is_tx = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(radio_tx));
+        const char *fec_inner = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo_fec_inner));
+        const char *fec_outer = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo_fec_outer));
+        char inner_code[32] = "h128";
+        char outer_code[32] = "none";
+        if (fec_inner) sscanf(fec_inner, "%31s", inner_code);
+        if (fec_outer) sscanf(fec_outer, "%31s", outer_code);
+
+        const char *pwd = gtk_entry_get_text(GTK_ENTRY(entry_pwd));
+        if (pwd && strlen(pwd) > 0) {
+            use_cipher = 1;
+            password_key = hash_password(pwd);
+        } else {
+            use_cipher = 0;
+            password_key = 0;
+        }
         
         transfer = dsss_transfer_create_callback(
             (char*)driver,
@@ -316,8 +367,8 @@ void on_start_stop_clicked(GtkWidget *widget, gpointer data) {
             gain,
             0.0, // ppm
             sf,
-            "h128", // inner fec
-            "none", // outer fec
+            inner_code, // inner fec
+            outer_code, // outer fec
             "", // id
             NULL, // dump
             0, // timeout
@@ -489,6 +540,14 @@ int main(int argc, char *argv[]) {
     gtk_combo_box_set_active(GTK_COMBO_BOX(combo_fec_outer), 0); // none default
     gtk_grid_attach(GTK_GRID(grid_settings), combo_fec_outer, 3, 2, 1, 1);
     gtk_widget_set_tooltip_text(combo_fec_outer, "Внешний (доп.) FEC. none — без, rs8 — сильнее защита");
+
+    // Пароль для ПСП (демонстрация: XOR-шифр)
+    gtk_grid_attach(GTK_GRID(grid_settings), gtk_label_new(_("Пароль (ПСП):")), 0, 3, 1, 1);
+    entry_pwd = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(entry_pwd), "");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry_pwd), _("Оставьте пустым для открытого режима"));
+    gtk_grid_attach(GTK_GRID(grid_settings), entry_pwd, 1, 3, 1, 1);
+    gtk_widget_set_tooltip_text(entry_pwd, "Пароль задаёт ПСП (простая XOR-демо). При неверном пароле будет «каша».");
     
     /* Spectrum Display - Removed as requested */
     /*
